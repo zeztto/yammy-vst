@@ -1,7 +1,7 @@
 # Build outputs
-build/
+/build/
 cmake-build*/
-Builds/
+/Builds/
 
 # IDE specific files
 .idea/
