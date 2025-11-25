@@ -7,73 +7,111 @@ on:
   workflow_dispatch:
 
 jobs:
+  build-macos:
+    runs-on: macos-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: brew install cmake
+
+      - name: Configure CMake
+        run: cmake -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_OSX_ARCHITECTURES="x86_64;arm64"
+
+      - name: Build
+        run: cmake --build build --config Release --parallel
+
+      - name: List build output
+        run: find build -name "*.vst3" -o -name "*.component" -o -name "*.app" 2>/dev/null || true
+
+      - name: Prepare macOS artifacts
+        run: |
+          mkdir -p artifacts
+
+          # Find and copy VST3
+          VST3_PATH=$(find build -type d -name "YAMMY.vst3" | head -1)
+          if [ -n "$VST3_PATH" ]; then
+            cp -R "$VST3_PATH" artifacts/
+            cd artifacts && zip -r YAMMY-VST3-macOS.zip YAMMY.vst3 && rm -rf YAMMY.vst3
+            cd ..
+          fi
+
+          # Find and copy AU
+          AU_PATH=$(find build -type d -name "YAMMY.component" | head -1)
+          if [ -n "$AU_PATH" ]; then
+            cp -R "$AU_PATH" artifacts/
+            cd artifacts && zip -r YAMMY-AU-macOS.zip YAMMY.component && rm -rf YAMMY.component
+            cd ..
+          fi
+
+          # Find and copy Standalone
+          APP_PATH=$(find build -type d -name "YAMMY.app" | head -1)
+          if [ -n "$APP_PATH" ]; then
+            cp -R "$APP_PATH" artifacts/
+            cd artifacts && zip -r YAMMY-Standalone-macOS.zip YAMMY.app && rm -rf YAMMY.app
+            cd ..
+          fi
+
+          ls -la artifacts/
+
+      - name: Upload macOS artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-builds
+          path: artifacts/*.zip
+          if-no-files-found: error
+
   build-windows:
     runs-on: windows-latest
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
-        with:
-          submodules: recursive
-
-      - name: Setup CMake
-        uses: jwlawson/actions-setup-cmake@v2
-        with:
-          cmake-version: '3.24'
 
       - name: Configure CMake
         run: cmake -B build -DCMAKE_BUILD_TYPE=Release
 
       - name: Build
-        run: cmake --build build --config Release
+        run: cmake --build build --config Release --parallel
 
-      - name: List build artifacts
-        run: |
-          Get-ChildItem -Path build -Recurse -Include *.vst3,*.exe | ForEach-Object { $_.FullName }
+      - name: List build output
+        run: Get-ChildItem -Path build -Recurse -Include *.vst3,*.exe | ForEach-Object { $_.FullName }
         shell: pwsh
 
-      - name: Prepare artifacts
+      - name: Prepare Windows artifacts
         run: |
-          mkdir -p artifacts
-          # Find and copy VST3
-          $vst3 = Get-ChildItem -Path build -Recurse -Filter "*.vst3" -Directory | Select-Object -First 1
+          New-Item -ItemType Directory -Force -Path artifacts
+
+          # Find and copy VST3 bundle
+          $vst3 = Get-ChildItem -Path build -Recurse -Directory -Filter "YAMMY.vst3" | Select-Object -First 1
           if ($vst3) {
-            Copy-Item -Path $vst3.FullName -Destination "artifacts/YAMMY.vst3" -Recurse
+            Copy-Item -Path $vst3.FullName -Destination "artifacts\YAMMY.vst3" -Recurse
+            Compress-Archive -Path "artifacts\YAMMY.vst3" -DestinationPath "artifacts\YAMMY-VST3-Windows.zip"
+            Remove-Item -Path "artifacts\YAMMY.vst3" -Recurse
           }
-          # Find and copy Standalone exe
-          $exe = Get-ChildItem -Path build -Recurse -Filter "YAMMY.exe" | Select-Object -First 1
-          if ($exe) {
-            Copy-Item -Path $exe.FullName -Destination "artifacts/"
+
+          # Find Standalone exe (look for YAMMY.exe or similar in Standalone folder)
+          $standaloneExe = Get-ChildItem -Path build -Recurse -File -Filter "*.exe" | Where-Object { $_.Directory.Name -like "*Standalone*" -or $_.Name -eq "YAMMY.exe" } | Select-Object -First 1
+          if ($standaloneExe) {
+            Copy-Item -Path $standaloneExe.FullName -Destination "artifacts\YAMMY.exe"
+            Compress-Archive -Path "artifacts\YAMMY.exe" -DestinationPath "artifacts\YAMMY-Standalone-Windows.zip"
+            Remove-Item -Path "artifacts\YAMMY.exe"
           }
+
+          Get-ChildItem artifacts
         shell: pwsh
 
-      - name: Create ZIP archives
-        run: |
-          cd artifacts
-          if (Test-Path "YAMMY.vst3") {
-            Compress-Archive -Path "YAMMY.vst3" -DestinationPath "YAMMY-VST3-Windows.zip"
-          }
-          if (Test-Path "YAMMY.exe") {
-            Compress-Archive -Path "YAMMY.exe" -DestinationPath "YAMMY-Standalone-Windows.zip"
-          }
-        shell: pwsh
-
-      - name: Upload VST3 artifact
+      - name: Upload Windows artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: YAMMY-VST3-Windows
-          path: artifacts/YAMMY-VST3-Windows.zip
-          if-no-files-found: warn
-
-      - name: Upload Standalone artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: YAMMY-Standalone-Windows
-          path: artifacts/YAMMY-Standalone-Windows.zip
-          if-no-files-found: warn
+          name: windows-builds
+          path: artifacts/*.zip
+          if-no-files-found: error
 
   release:
-    needs: build-windows
+    needs: [build-macos, build-windows]
     runs-on: ubuntu-latest
     if: startsWith(github.ref, 'refs/tags/v')
 
@@ -81,20 +119,25 @@ jobs:
       contents: write
 
     steps:
-      - name: Download all artifacts
+      - name: Download macOS artifacts
         uses: actions/download-artifact@v4
         with:
-          path: artifacts
+          name: macos-builds
+          path: release-files
 
-      - name: Display downloaded artifacts
-        run: ls -la artifacts/
+      - name: Download Windows artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: windows-builds
+          path: release-files
+
+      - name: List release files
+        run: ls -la release-files/
 
       - name: Create Release
-        uses: softprops/action-gh-release@v1
+        uses: softprops/action-gh-release@v2
         with:
-          files: |
-            artifacts/YAMMY-VST3-Windows/YAMMY-VST3-Windows.zip
-            artifacts/YAMMY-Standalone-Windows/YAMMY-Standalone-Windows.zip
+          files: release-files/*.zip
           generate_release_notes: true
           draft: false
           prerelease: false
