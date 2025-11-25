@@ -1,0 +1,21 @@
+# Build outputs
+build/
+cmake-build*/
+Builds/
+
+# IDE specific files
+.idea/
+*.xcodeproj/
+*.xcworkspace/
+.vs/
+*.sln
+*.vcxproj*
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Temporary files
+*.tmp
+*.temp
+*.log
